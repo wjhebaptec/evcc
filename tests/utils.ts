@@ -7,14 +7,19 @@ export async function openMoreMenu(page: Page): Promise<Locator> {
   return moreButton;
 }
 
+// Bootstrap modal show/hide animations can take ~300ms but on slow CI they
+// can stretch beyond Playwright's default 5s assertion timeout. Use a longer
+// timeout here so transitions don't cause flakes (#flake fix).
+const MODAL_TIMEOUT = 15000;
+
 export async function expectModalVisible(modal: Locator): Promise<void> {
-  await expect(modal).toBeVisible();
-  await expect(modal).toHaveAttribute("aria-hidden", "false");
+  await expect(modal).toBeVisible({ timeout: MODAL_TIMEOUT });
+  await expect(modal).toHaveAttribute("aria-hidden", "false", { timeout: MODAL_TIMEOUT });
 }
 
 export async function expectModalHidden(modal: Locator): Promise<void> {
-  await expect(modal).not.toBeVisible();
-  await expect(modal).toHaveAttribute("aria-hidden", "true");
+  await expect(modal).not.toBeVisible({ timeout: MODAL_TIMEOUT });
+  await expect(modal).toHaveAttribute("aria-hidden", "true", { timeout: MODAL_TIMEOUT });
 }
 
 export async function editorClear(editor: Locator, iterations = 10): Promise<void> {
