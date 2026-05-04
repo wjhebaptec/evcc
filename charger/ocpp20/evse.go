@@ -75,6 +75,12 @@ func NewEVSE(ctx context.Context, log *util.Logger, id, connectorID int, cp *Sta
 		return nil, err
 	}
 
+	// replay cached status if the station already sent one before the EVSE
+	// was constructed (mirrors 1.6 connector.WithConnectorStatus behavior).
+	Instance().WithEVSEStatus(cp.ID(), id, func(status *availability.StatusNotificationRequest) {
+		evse.OnStatusNotification(status)
+	})
+
 	go func() {
 		// deregister evse when the context is cancelled
 		<-ctx.Done()
