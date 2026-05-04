@@ -61,7 +61,9 @@ test.describe("SHM", () => {
 
     await shmCard.getByRole("button", { name: "edit" }).click();
     await expectModalVisible(modal);
-    await expect(vendor).toHaveValue(VALID_VENDOR_ID);
+    // form fields are populated asynchronously after the modal is shown — give
+    // the API roundtrip room before asserting (default 5s is too tight on slow CI)
+    await expect(vendor).toHaveValue(VALID_VENDOR_ID, { timeout: 15000 });
     await expect(device).toHaveValue(VALID_DEVICE_ID);
     await expect(serial).toHaveValue(VALID_DEVICE_SERIAL);
 
