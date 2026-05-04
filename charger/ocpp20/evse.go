@@ -1,4 +1,4 @@
-package ocpp
+package ocpp20
 
 import (
 	"context"
@@ -9,59 +9,77 @@ import (
 	"time"
 
 	"github.com/benbjohnson/clock"
+	"github.com/evcc-io/evcc/charger/ocpp"
 	"github.com/evcc-io/evcc/util"
 	"github.com/lorenzodonini/ocpp-go/ocpp2.0.1/availability"
 	"github.com/lorenzodonini/ocpp-go/ocpp2.0.1/transactions"
 	"github.com/lorenzodonini/ocpp-go/ocpp2.0.1/types"
 )
 
-// Transaction20 represents an active OCPP 2.0.1 transaction
-type Transaction20 struct {
+// Transaction represents an active OCPP 2.0.1 transaction
+type Transaction struct {
 	id            string
 	chargingState transactions.ChargingState
 	startTime     time.Time
 	seqNo         int
 }
 
-// EVSE represents an OCPP 2.0.1 EVSE (Electric Vehicle Supply Equipment)
-type EVSE struct {
-	log   *util.Logger
-	mu    sync.Mutex
-	clock clock.Clock
-	cp    *CS20CP
-	id    int
+// measurementKey identifies a unique measurement by measurand and phase
+type measurementKey struct {
+	measurand types.Measurand
+	phase     types.Phase
+}
 
-	status      *availability.StatusNotificationRequest
-	statusC     chan struct{}
-	statusOnce  sync.Once
-	statusTime  time.Time
-	connectorID int // connector ID from last status notification
+// EVSE represents an OCPP 2.0.1 EVSE (Electric Vehicle Supply Equipment).
+// connectorID selects the physical connector under this EVSE; 0 addresses the
+// EVSE as a whole, positive values pick a specific connector for stations with
+// multiple connectors per EVSE.
+type EVSE struct {
+	log         *util.Logger
+	mu          sync.Mutex
+	clock       clock.Clock
+	cp          *Station
+	id          int
+	connectorID int // connector to target on this EVSE (0 = EVSE-wide)
+
+	status     *availability.StatusNotificationRequest
+	statusC    chan struct{}
+	statusOnce sync.Once
+	statusTime time.Time
 
 	meterUpdated time.Time
-	measurements map[types.Measurand][]types.SampledValue // stores all samples including per-phase
+	measurements map[measurementKey]types.SampledValue // latest sample per (measurand, phase)
 
-	transaction   *Transaction20
+	transaction   *Transaction
 	idTag         string
 	remoteIdTag   string
 	meterInterval time.Duration
 }
 
-// NewEVSE creates a new EVSE for OCPP 2.0.1
-func NewEVSE(ctx context.Context, log *util.Logger, id int, cp *CS20CP, idTag string, meterInterval time.Duration) (*EVSE, error) {
+// NewEVSE creates a new EVSE for OCPP 2.0.1.
+// connectorID selects the connector under this EVSE (0 = EVSE-wide).
+func NewEVSE(ctx context.Context, log *util.Logger, id, connectorID int, cp *Station, idTag string, meterInterval time.Duration) (*EVSE, error) {
 	evse := &EVSE{
 		log:           log,
 		clock:         clock.New(),
 		cp:            cp,
 		id:            id,
+		connectorID:   connectorID,
 		statusC:       make(chan struct{}),
-		measurements:  make(map[types.Measurand][]types.SampledValue),
+		measurements:  make(map[measurementKey]types.SampledValue),
 		meterInterval: meterInterval,
 		remoteIdTag:   idTag,
 	}
 
-	if err := cp.registerEVSE(id, evse); err != nil {
+	if err := cp.registerEVSE(id, connectorID, evse); err != nil {
 		return nil, err
 	}
+
+	go func() {
+		// deregister evse when the context is cancelled
+		<-ctx.Done()
+		cp.deregisterEVSE(id, connectorID)
+	}()
 
 	return evse, nil
 }
@@ -69,7 +87,7 @@ func NewEVSE(ctx context.Context, log *util.Logger, id int, cp *CS20CP, idTag st
 // Initialized waits for initial status notification
 func (e *EVSE) Initialized() error {
 	// wait for initial status or timeout
-	timeout := time.NewTimer(Timeout)
+	timeout := time.NewTimer(ocpp.Timeout)
 	defer timeout.Stop()
 
 	select {
@@ -86,14 +104,15 @@ func (e *EVSE) WatchDog(ctx context.Context, meterInterval time.Duration) {
 	// In 2.0.1, meter values typically come via TransactionEvent
 }
 
-// OnStatusNotification handles status notifications
+// OnStatusNotification handles status notifications.
+// Connector-level filtering is done by the CSMS dispatcher; this method
+// unconditionally records what it is given.
 func (e *EVSE) OnStatusNotification(request *availability.StatusNotificationRequest) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	e.status = request
 	e.statusTime = time.Now()
-	e.connectorID = request.ConnectorID
 
 	// signal initialization (once only, safe for concurrent calls)
 	e.statusOnce.Do(func() {
@@ -108,7 +127,7 @@ func (e *EVSE) OnTransactionEvent(request *transactions.TransactionEventRequest)
 
 	switch request.EventType {
 	case transactions.TransactionEventStarted:
-		e.transaction = &Transaction20{
+		e.transaction = &Transaction{
 			id:            request.TransactionInfo.TransactionID,
 			chargingState: request.TransactionInfo.ChargingState,
 			startTime:     request.Timestamp.Time,
@@ -144,11 +163,12 @@ func (e *EVSE) updateMeterValues(meterValues []types.MeterValue) {
 	e.updateMeterValuesLocked(meterValues)
 }
 
-// updateMeterValuesLocked updates meter values (must hold e.mu)
+// updateMeterValuesLocked updates meter values (must hold e.mu).
+// Stores only the latest sample per (measurand, phase) to bound memory.
 func (e *EVSE) updateMeterValuesLocked(meterValues []types.MeterValue) {
 	for _, mv := range meterValues {
 		for _, sv := range mv.SampledValue {
-			e.measurements[sv.Measurand] = append(e.measurements[sv.Measurand], sv)
+			e.measurements[measurementKey{sv.Measurand, sv.Phase}] = sv
 		}
 	}
 	e.meterUpdated = time.Now()
@@ -214,21 +234,26 @@ func (e *EVSE) NeedsAuthentication() bool {
 	return false
 }
 
-// getMeasurement returns a measurement value with scaling applied (uses latest sample)
+// getMeasurement returns a measurement value with scaling applied.
+// Tries the no-phase entry first, then falls back to any phase entry.
 func (e *EVSE) getMeasurement(measurand types.Measurand) (float64, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if samples, ok := e.measurements[measurand]; ok && len(samples) > 0 {
-		// return the latest sample (last in slice)
-		return e.scale20(samples[len(samples)-1]), nil
+	if sv, ok := e.measurements[measurementKey{measurand: measurand}]; ok {
+		return e.scale(sv), nil
+	}
+	for k, sv := range e.measurements {
+		if k.measurand == measurand {
+			return e.scale(sv), nil
+		}
 	}
 
 	return 0, fmt.Errorf("measurement not available: %s", measurand)
 }
 
-// scale20 applies unit scaling for OCPP 2.0.1 SampledValue
-func (e *EVSE) scale20(sv types.SampledValue) float64 {
+// scale applies unit scaling for OCPP 2.0.1 SampledValue
+func (e *EVSE) scale(sv types.SampledValue) float64 {
 	val := sv.Value
 
 	if sv.UnitOfMeasure != nil && sv.UnitOfMeasure.Multiplier != nil {
@@ -260,12 +285,8 @@ func (e *EVSE) Currents() (float64, float64, float64, error) {
 	defer e.mu.Unlock()
 
 	getPhase := func(phase types.Phase) float64 {
-		if samples, ok := e.measurements[types.MeasurandCurrentImport]; ok {
-			for _, sv := range samples {
-				if sv.Phase == phase {
-					return e.scale20(sv)
-				}
-			}
+		if sv, ok := e.measurements[measurementKey{types.MeasurandCurrentImport, phase}]; ok {
+			return e.scale(sv)
 		}
 		return 0
 	}
@@ -279,12 +300,8 @@ func (e *EVSE) Voltages() (float64, float64, float64, error) {
 	defer e.mu.Unlock()
 
 	getPhase := func(phase types.Phase) float64 {
-		if samples, ok := e.measurements[types.MeasurandVoltage]; ok {
-			for _, sv := range samples {
-				if sv.Phase == phase {
-					return e.scale20(sv)
-				}
-			}
+		if sv, ok := e.measurements[measurementKey{types.MeasurandVoltage, phase}]; ok {
+			return e.scale(sv)
 		}
 		return 0
 	}

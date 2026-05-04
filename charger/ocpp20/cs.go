@@ -1,57 +1,58 @@
-package ocpp
+package ocpp20
 
 import (
 	"errors"
 	"fmt"
 	"sync"
 
+	"github.com/evcc-io/evcc/charger/ocpp"
 	"github.com/evcc-io/evcc/util"
 	ocpp2 "github.com/lorenzodonini/ocpp-go/ocpp2.0.1"
 	"github.com/lorenzodonini/ocpp-go/ocpp2.0.1/availability"
 )
 
-type registration20 struct {
+type registration struct {
 	mu     sync.RWMutex
 	setup  sync.RWMutex                                    // serialises charging station setup
-	cs     *CS20CP                                         // guarded by setup and CSMS mutexes
+	cs     *Station                                        // guarded by setup and CSMS mutexes
 	status map[int]*availability.StatusNotificationRequest // guarded by mu mutex
 }
 
-func newRegistration20() *registration20 {
-	return &registration20{status: make(map[int]*availability.StatusNotificationRequest)}
+func newRegistration() *registration {
+	return &registration{status: make(map[int]*availability.StatusNotificationRequest)}
 }
 
-// CSMS20 is the OCPP 2.0.1 Charging Station Management System
-type CSMS20 struct {
+// CSMS is the OCPP 2.0.1 Charging Station Management System
+type CSMS struct {
 	ocpp2.CSMS
 	mu          sync.Mutex
 	log         *util.Logger
-	regs        map[string]*registration20 // guarded by mu mutex
+	regs        map[string]*registration // guarded by mu mutex
 	publishFunc func()
 }
 
 // status returns the OCPP 2.0.1 runtime status
-func (cs *CSMS20) status() []stationStatus {
+func (cs *CSMS) status() []ocpp.StationInfo {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
-	stations := []stationStatus{}
+	stations := []ocpp.StationInfo{}
 
 	for id, reg := range cs.regs {
 		if id == "" {
 			continue // skip anonymous registrations
 		}
 
-		state := StationStatusUnknown
+		state := ocpp.StationStatusUnknown
 		if cp := reg.cs; cp != nil {
 			if cp.Connected() {
-				state = StationStatusConnected
+				state = ocpp.StationStatusConnected
 			} else {
-				state = StationStatusConfigured
+				state = ocpp.StationStatusConfigured
 			}
 		}
 
-		stations = append(stations, stationStatus{
+		stations = append(stations, ocpp.StationInfo{
 			ID:     id,
 			Status: state,
 		})
@@ -61,27 +62,27 @@ func (cs *CSMS20) status() []stationStatus {
 }
 
 // SetUpdated sets a callback function that is called when the status changes
-func (cs *CSMS20) SetUpdated(f func()) {
+func (cs *CSMS) SetUpdated(f func()) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.publishFunc = f
 }
 
 // errorHandler logs error channel
-func (cs *CSMS20) errorHandler(errC <-chan error) {
+func (cs *CSMS) errorHandler(errC <-chan error) {
 	for err := range errC {
 		cs.log.ERROR.Println(err)
 	}
 }
 
 // publish triggers the publish callback if set
-func (cs *CSMS20) publish() {
+func (cs *CSMS) publish() {
 	if cs.publishFunc != nil {
 		cs.publishFunc()
 	}
 }
 
-func (cs *CSMS20) ChargingStationByID(id string) (*CS20CP, error) {
+func (cs *CSMS) ChargingStationByID(id string) (*Station, error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
@@ -95,7 +96,7 @@ func (cs *CSMS20) ChargingStationByID(id string) (*CS20CP, error) {
 	return reg.cs, nil
 }
 
-func (cs *CSMS20) WithEVSEStatus(id string, evseID int, fun func(status *availability.StatusNotificationRequest)) {
+func (cs *CSMS) WithEVSEStatus(id string, evseID int, fun func(status *availability.StatusNotificationRequest)) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
@@ -109,13 +110,13 @@ func (cs *CSMS20) WithEVSEStatus(id string, evseID int, fun func(status *availab
 }
 
 // RegisterChargingStation registers a charging station with the CSMS or returns an already registered one
-func (cs *CSMS20) RegisterChargingStation(id string, newfun func() *CS20CP, init func(*CS20CP) error) (*CS20CP, error) {
+func (cs *CSMS) RegisterChargingStation(id string, newfun func() *Station, init func(*Station) error) (*Station, error) {
 	cs.mu.Lock()
 
 	// prepare shadow state
 	reg, registered := cs.regs[id]
 	if !registered {
-		reg = newRegistration20()
+		reg = newRegistration()
 		cs.regs[id] = reg
 	}
 
@@ -155,7 +156,7 @@ func (cs *CSMS20) RegisterChargingStation(id string, newfun func() *CS20CP, init
 }
 
 // NewChargingStation implements ocpp2.ChargingStationConnectionHandler
-func (cs *CSMS20) NewChargingStation(station ocpp2.ChargingStationConnection) {
+func (cs *CSMS) NewChargingStation(station ocpp2.ChargingStationConnection) {
 	cs.mu.Lock()
 
 	// check for configured charging station
@@ -179,8 +180,12 @@ func (cs *CSMS20) NewChargingStation(station ocpp2.ChargingStationConnection) {
 		cp := reg.cs
 		cs.log.INFO.Printf("charging station connected, registering: %s", station.ID())
 
-		// update id
-		cp.RegisterID(station.ID())
+		if err := cp.RegisterID(station.ID()); err != nil {
+			cs.log.ERROR.Printf("register charging station: %v", err)
+			cs.mu.Unlock()
+			cs.publish()
+			return
+		}
 		cs.regs[station.ID()] = reg
 		delete(cs.regs, "")
 
@@ -192,7 +197,7 @@ func (cs *CSMS20) NewChargingStation(station ocpp2.ChargingStationConnection) {
 	}
 
 	// register unknown charging station
-	cs.regs[station.ID()] = newRegistration20()
+	cs.regs[station.ID()] = newRegistration()
 	cs.log.INFO.Printf("unknown charging station connected: %s", station.ID())
 
 	cs.mu.Unlock()
@@ -200,7 +205,7 @@ func (cs *CSMS20) NewChargingStation(station ocpp2.ChargingStationConnection) {
 }
 
 // ChargingStationDisconnected implements ocpp2.ChargingStationConnectionHandler
-func (cs *CSMS20) ChargingStationDisconnected(station ocpp2.ChargingStationConnection) {
+func (cs *CSMS) ChargingStationDisconnected(station ocpp2.ChargingStationConnection) {
 	cs.log.DEBUG.Printf("charging station disconnected: %s", station.ID())
 
 	if cp, err := cs.ChargingStationByID(station.ID()); err == nil {

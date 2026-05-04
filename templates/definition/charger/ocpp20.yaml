@@ -54,6 +54,15 @@ params:
     help:
       de: Nummer des EVSE (Electric Vehicle Supply Equipment)
       en: Number of the EVSE (Electric Vehicle Supply Equipment)
+  - name: connector
+    description:
+      de: Anschluss
+      en: Connector
+    default: 1
+    help:
+      de: Anschlussnummer am EVSE (nur fuer Stationen mit mehreren Anschluessen pro EVSE)
+      en: Connector number on the EVSE (only for stations with multiple connectors per EVSE)
+    advanced: true
   - name: idtag
     description:
       de: ID-Tag
@@ -70,6 +79,15 @@ params:
     help:
       de: Automatischer Transaktionsstart beim Anschliessen eines Fahrzeugs
       en: Automatic transaction start when a vehicle is connected
+    advanced: true
+  - name: phaseswitching
+    description:
+      de: Phasenumschaltung
+      en: Phase switching
+    type: bool
+    help:
+      de: Aktiviert die 1p/3p Phasenumschaltung. Die Ladestation muss dies unterstuetzen.
+      en: Enables 1p/3p phase switching. Requires station support.
     advanced: true
   - name: meterinterval
     description:

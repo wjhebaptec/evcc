@@ -25,6 +25,7 @@ import (
 
 	"github.com/evcc-io/evcc/api"
 	"github.com/evcc-io/evcc/charger/ocpp"
+	"github.com/evcc-io/evcc/charger/ocpp20"
 	"github.com/evcc-io/evcc/core/loadpoint"
 	"github.com/evcc-io/evcc/util"
 	"github.com/evcc-io/evcc/util/sponsor"
@@ -38,8 +39,8 @@ import (
 // OCPP20 charger implementation for OCPP 2.0.1
 type OCPP20 struct {
 	log     *util.Logger
-	cp      *ocpp.CS20CP
-	evse    *ocpp.EVSE
+	cp      *ocpp20.Station
+	evse    *ocpp20.EVSE
 	phases  int
 	enabled bool
 	current float64
@@ -61,14 +62,17 @@ func NewOCPP20FromConfig(ctx context.Context, other map[string]any) (api.Charger
 		StationId      string
 		IdTag          string
 		EVSE           int
+		Connector      int
 		MeterInterval  time.Duration
 		ConnectTimeout time.Duration // Initial Timeout
 
 		StackLevelZero      *bool
 		ProfileKindRelative bool
 		RemoteStart         bool
+		PhaseSwitching      bool
 	}{
 		EVSE:           1,
+		Connector:      1,
 		MeterInterval:  10 * time.Second,
 		ConnectTimeout: 5 * time.Minute,
 	}
@@ -81,9 +85,10 @@ func NewOCPP20FromConfig(ctx context.Context, other map[string]any) (api.Charger
 	profileKindRelative := cc.ProfileKindRelative
 
 	c, err := NewOCPP20(ctx,
-		cc.StationId, cc.EVSE, cc.IdTag,
+		cc.StationId, cc.EVSE, cc.Connector, cc.IdTag,
 		cc.MeterInterval,
 		stackLevelZero, profileKindRelative, cc.RemoteStart,
+		cc.PhaseSwitching,
 		cc.ConnectTimeout)
 	if err != nil {
 		return c, err
@@ -129,8 +134,11 @@ func NewOCPP20FromConfig(ctx context.Context, other map[string]any) (api.Charger
 		currentG = c.evse.GetMaxCurrent
 	}
 
-	// Phase switching - TODO: implement detection
+	// Phase switching is wired when either GetVariables discovery or manual config enables it.
 	var phasesS func(int) error
+	if c.cp.PhaseSwitching {
+		phasesS = c.phases1p3p
+	}
 
 	return decorateOCPP20(c, powerG, totalEnergyG, currentsG, voltagesG, currentG, phasesS, socG), nil
 }
@@ -139,18 +147,18 @@ func NewOCPP20FromConfig(ctx context.Context, other map[string]any) (api.Charger
 
 // NewOCPP20 creates an OCPP 2.0.1 charger
 func NewOCPP20(ctx context.Context,
-	id string, evseID int, idTag string,
+	id string, evseID, connectorID int, idTag string,
 	meterInterval time.Duration,
-	stackLevelZero, profileKindRelative, remoteStart bool,
+	stackLevelZero, profileKindRelative, remoteStart, phaseSwitching bool,
 	connectTimeout time.Duration,
 ) (*OCPP20, error) {
 	log := util.NewLogger(fmt.Sprintf("%s-%d", lo.CoalesceOrEmpty(id, "ocpp20"), evseID))
 
-	cp, err := ocpp.Instance20().RegisterChargingStation(id,
-		func() *ocpp.CS20CP {
-			return ocpp.NewCS20CP(log, id)
+	cp, err := ocpp20.Instance().RegisterChargingStation(id,
+		func() *ocpp20.Station {
+			return ocpp20.NewStation(log, id)
 		},
-		func(cp *ocpp.CS20CP) error {
+		func(cp *ocpp20.Station) error {
 			log.DEBUG.Printf("waiting for charging station: %v", connectTimeout)
 
 			select {
@@ -161,8 +169,7 @@ func NewOCPP20(ctx context.Context,
 			case <-cp.HasConnected():
 			}
 
-			// TODO: implement Setup for OCPP 2.0.1 using GetVariables/SetVariables
-			return nil
+			return cp.Setup()
 		},
 	)
 	if err != nil {
@@ -173,9 +180,14 @@ func NewOCPP20(ctx context.Context,
 		idTag = lo.CoalesceOrEmpty(idTag, defaultIdTag20)
 	}
 
-	evse, err := ocpp.NewEVSE(ctx, log, evseID, cp, idTag, meterInterval)
+	evse, err := ocpp20.NewEVSE(ctx, log, evseID, connectorID, cp, idTag, meterInterval)
 	if err != nil {
 		return nil, err
+	}
+
+	// manual config force-enables; never disables a discovered capability
+	if phaseSwitching {
+		cp.EnablePhaseSwitching()
 	}
 
 	c := &OCPP20{
@@ -189,8 +201,27 @@ func NewOCPP20(ctx context.Context,
 	return c, evse.Initialized()
 }
 
+// phases1p3p implements the api.PhaseSwitcher interface.
+// In OCPP 2.0.1, phase switching is encoded via ChargingSchedulePeriod.NumberPhases
+// in the active charging profile, so we re-send the profile with the new phase count.
+func (c *OCPP20) phases1p3p(phases int) error {
+	c.phases = phases
+
+	enabled, err := c.Enabled()
+	if err != nil {
+		return err
+	}
+
+	var current float64
+	if enabled {
+		current = c.current
+	}
+
+	return c.setCurrent(current)
+}
+
 // EVSE returns the EVSE instance
-func (c *OCPP20) EVSE() *ocpp.EVSE {
+func (c *OCPP20) EVSE() *ocpp20.EVSE {
 	return c.evse
 }
 
@@ -302,11 +333,11 @@ func (c *OCPP20) setCurrent(current float64) error {
 func (c *OCPP20) setChargingProfile(profile *types.ChargingProfile) error {
 	rc := make(chan error, 1)
 
-	err := ocpp.Instance20().SetChargingProfile(
+	err := ocpp20.Instance().SetChargingProfile(
 		c.cp.ID(),
 		func(resp *smartcharging.SetChargingProfileResponse, err error) {
 			if err == nil && resp.Status != smartcharging.ChargingProfileStatusAccepted {
-				err = fmt.Errorf("set charging profile: %s", resp.Status)
+				err = fmt.Errorf("status: %s", resp.Status)
 			}
 			rc <- err
 		},

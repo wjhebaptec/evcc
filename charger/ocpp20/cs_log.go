@@ -1,11 +1,11 @@
-package ocpp
+package ocpp20
 
 import (
 	"fmt"
 	"strings"
 )
 
-func (cs *CSMS20) print(s string) {
+func (cs *CSMS) print(s string) {
 	var ok bool
 	if s, ok = strings.CutPrefix(s, "sent JSON message to"); ok {
 		s = "send" + s
@@ -17,26 +17,26 @@ func (cs *CSMS20) print(s string) {
 	}
 }
 
-func (cs *CSMS20) Debug(args ...any) {
+func (cs *CSMS) Debug(args ...any) {
 	cs.print(fmt.Sprintln(args...))
 }
 
-func (cs *CSMS20) Debugf(f string, args ...any) {
+func (cs *CSMS) Debugf(f string, args ...any) {
 	cs.print(fmt.Sprintf(f, args...))
 }
 
-func (cs *CSMS20) Info(args ...any) {
+func (cs *CSMS) Info(args ...any) {
 	cs.print(fmt.Sprintln(args...))
 }
 
-func (cs *CSMS20) Infof(f string, args ...any) {
+func (cs *CSMS) Infof(f string, args ...any) {
 	cs.print(fmt.Sprintf(f, args...))
 }
 
-func (cs *CSMS20) Error(args ...any) {
+func (cs *CSMS) Error(args ...any) {
 	cs.print(fmt.Sprintln(args...))
 }
 
-func (cs *CSMS20) Errorf(f string, args ...any) {
+func (cs *CSMS) Errorf(f string, args ...any) {
 	cs.print(fmt.Sprintf(f, args...))
 }

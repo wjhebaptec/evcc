@@ -1,4 +1,4 @@
-package ocpp
+package ocpp20
 
 import (
 	"context"
@@ -6,14 +6,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/evcc-io/evcc/charger/ocpp"
 	"github.com/evcc-io/evcc/util"
 	"github.com/lorenzodonini/ocpp-go/ocpp2.0.1/provisioning"
 	"github.com/lorenzodonini/ocpp-go/ocpp2.0.1/remotecontrol"
 	"github.com/lorenzodonini/ocpp-go/ocpp2.0.1/types"
 )
 
-// CS20CP represents an OCPP 2.0.1 Charging Station
-type CS20CP struct {
+// Station represents an OCPP 2.0.1 Charging Station
+type Station struct {
 	mu          sync.RWMutex
 	log         *util.Logger
 	onceConnect sync.Once
@@ -36,15 +37,21 @@ type CS20CP struct {
 	bootNotificationRequestC chan *provisioning.BootNotificationRequest
 	BootNotificationResult   *provisioning.BootNotificationRequest
 
-	evses map[int]*EVSE
+	evses map[evseKey]*EVSE
 }
 
-func NewCS20CP(log *util.Logger, id string) *CS20CP {
-	return &CS20CP{
+// evseKey identifies a registered EVSE by both EVSE id and connector id,
+// so a single physical EVSE with multiple connectors can host multiple targets.
+type evseKey struct {
+	evseID, connectorID int
+}
+
+func NewStation(log *util.Logger, id string) *Station {
+	return &Station{
 		log: log,
 		id:  id,
 
-		evses: make(map[int]*EVSE),
+		evses: make(map[evseKey]*EVSE),
 
 		connectC:                 make(chan struct{}, 1),
 		meterC:                   make(chan struct{}, 1),
@@ -55,26 +62,62 @@ func NewCS20CP(log *util.Logger, id string) *CS20CP {
 	}
 }
 
-func (cp *CS20CP) registerEVSE(id int, evse *EVSE) error {
+func (cp *Station) registerEVSE(evseID, connectorID int, evse *EVSE) error {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
 
-	if _, ok := cp.evses[id]; ok {
-		return fmt.Errorf("evse already registered: %d", id)
+	k := evseKey{evseID, connectorID}
+	if _, ok := cp.evses[k]; ok {
+		return fmt.Errorf("evse already registered: %d/%d", evseID, connectorID)
 	}
 
-	cp.evses[id] = evse
+	cp.evses[k] = evse
 	return nil
 }
 
-func (cp *CS20CP) evseByID(id int) *EVSE {
+func (cp *Station) deregisterEVSE(evseID, connectorID int) {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+
+	delete(cp.evses, evseKey{evseID, connectorID})
+}
+
+// evsesForEvse returns all EVSE listeners registered for the given EVSE id,
+// regardless of connector. Used for fan-out of EVSE-level events (e.g. MeterValues).
+func (cp *Station) evsesForEvse(evseID int) []*EVSE {
 	cp.mu.RLock()
 	defer cp.mu.RUnlock()
 
-	return cp.evses[id]
+	var out []*EVSE
+	for k, evse := range cp.evses {
+		if k.evseID == evseID {
+			out = append(out, evse)
+		}
+	}
+	return out
 }
 
-func (cp *CS20CP) evseByTransactionID(id string) *EVSE {
+// evsesForConnector returns EVSE listeners that should receive an event for the
+// given (evseID, connectorID). connectorID==0 means EVSE-wide; listeners
+// registered with connectorID==0 always match, and listeners with positive
+// connectorID match only their own connector.
+func (cp *Station) evsesForConnector(evseID, connectorID int) []*EVSE {
+	cp.mu.RLock()
+	defer cp.mu.RUnlock()
+
+	var out []*EVSE
+	for k, evse := range cp.evses {
+		if k.evseID != evseID {
+			continue
+		}
+		if k.connectorID == 0 || connectorID == 0 || k.connectorID == connectorID {
+			out = append(out, evse)
+		}
+	}
+	return out
+}
+
+func (cp *Station) evseByTransactionID(id string) *EVSE {
 	cp.mu.RLock()
 	defer cp.mu.RUnlock()
 
@@ -87,34 +130,47 @@ func (cp *CS20CP) evseByTransactionID(id string) *EVSE {
 	return nil
 }
 
-func (cp *CS20CP) ID() string {
+func (cp *Station) ID() string {
 	cp.mu.RLock()
 	defer cp.mu.RUnlock()
 
 	return cp.id
 }
 
-func (cp *CS20CP) RegisterID(id string) {
+func (cp *Station) RegisterID(id string) error {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
 
+	if cp.id == id {
+		return nil
+	}
 	if cp.id != "" {
-		panic("ocpp: cannot re-register id")
+		return fmt.Errorf("ocpp: cannot re-register id %q (already %q)", id, cp.id)
 	}
 
 	cp.id = id
+	return nil
+}
+
+// EnablePhaseSwitching forces phase switching on regardless of discovered capability.
+// Used by manual config to override / supplement GetVariables auto-discovery.
+func (cp *Station) EnablePhaseSwitching() {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+
+	cp.PhaseSwitching = true
 }
 
 // stopBootTimer cancels and clears the boot notification wait timer.
 // Must be called with cp.mu held.
-func (cp *CS20CP) stopBootTimer() {
+func (cp *Station) stopBootTimer() {
 	if cp.bootTimer != nil {
 		cp.bootTimer.Stop()
 		cp.bootTimer = nil
 	}
 }
 
-func (cp *CS20CP) connect(connect bool) {
+func (cp *Station) connect(connect bool) {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
 
@@ -130,15 +186,15 @@ func (cp *CS20CP) connect(connect bool) {
 }
 
 // onTransportConnect is called when the WebSocket connection is established.
-func (cp *CS20CP) onTransportConnect() {
+func (cp *Station) onTransportConnect() {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
 
 	cp.stopBootTimer()
-	cp.bootTimer = time.AfterFunc(Timeout, cp.onBootTimeout)
+	cp.bootTimer = time.AfterFunc(ocpp.Timeout, cp.onBootTimeout)
 
 	// Proactively trigger BootNotification after a short delay.
-	time.AfterFunc(triggerBootDelay, func() {
+	time.AfterFunc(ocpp.TriggerBootDelay, func() {
 		cp.mu.RLock()
 		if cp.bootTimer == nil || cp.BootNotificationResult != nil {
 			cp.mu.RUnlock()
@@ -148,7 +204,7 @@ func (cp *CS20CP) onTransportConnect() {
 
 		cp.log.DEBUG.Printf("proactively triggering BootNotification")
 
-		if err := Instance20().TriggerMessage(
+		if err := Instance().TriggerMessage(
 			cp.id,
 			func(conf *remotecontrol.TriggerMessageResponse, err error) {
 				if err != nil {
@@ -164,7 +220,7 @@ func (cp *CS20CP) onTransportConnect() {
 }
 
 // onBootTimeout is called when the BootNotification wait timer expires.
-func (cp *CS20CP) onBootTimeout() {
+func (cp *Station) onBootTimeout() {
 	cp.mu.Lock()
 	if cp.bootTimer == nil {
 		cp.mu.Unlock()
@@ -177,19 +233,19 @@ func (cp *CS20CP) onBootTimeout() {
 	cp.connect(true)
 }
 
-func (cp *CS20CP) Connected() bool {
+func (cp *Station) Connected() bool {
 	cp.mu.RLock()
 	defer cp.mu.RUnlock()
 
 	return cp.connected
 }
 
-func (cp *CS20CP) HasConnected() <-chan struct{} {
+func (cp *Station) HasConnected() <-chan struct{} {
 	return cp.connectC
 }
 
 // MonitorReboot ensures the given function runs only once per CP instance.
-func (cp *CS20CP) MonitorReboot(ctx context.Context, setup func() error) {
+func (cp *Station) MonitorReboot(ctx context.Context, setup func() error) {
 	cp.onceMonitor.Do(func() {
 		// drain boot notification from initial setup
 		select {
@@ -201,7 +257,7 @@ func (cp *CS20CP) MonitorReboot(ctx context.Context, setup func() error) {
 	})
 }
 
-func (cp *CS20CP) monitorReboot(ctx context.Context, setup func() error) {
+func (cp *Station) monitorReboot(ctx context.Context, setup func() error) {
 	for {
 		select {
 		case <-ctx.Done():
