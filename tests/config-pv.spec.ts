@@ -32,6 +32,9 @@ test.describe("pv meter", async () => {
     await expect(meterModal.getByLabel("Maximum AC power of the hybrid inverter")).toBeVisible(); // pv usage only
     await expect(meterModal.getByRole("button", { name: "Validate & save" })).toBeVisible();
     await meterModal.getByRole("link", { name: "validate" }).click();
+    // wait for validation to complete before checking the result tag — backend
+    // can take longer than the default 5s assertion timeout on slow CI runners
+    await expect(meterModal.getByTestId("test-result")).toContainText("Status: successful");
     await expect(meterModal.getByTestId("device-tag-power")).toContainText("5.0 kW");
     await meterModal.getByRole("button", { name: "Save" }).click();
     await expectModalHidden(meterModal);
