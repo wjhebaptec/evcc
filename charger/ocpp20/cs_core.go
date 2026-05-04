@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/evcc-io/evcc/charger/ocpp"
-
 	"github.com/lorenzodonini/ocpp-go/ocpp2.0.1/authorization"
 	"github.com/lorenzodonini/ocpp-go/ocpp2.0.1/availability"
 	"github.com/lorenzodonini/ocpp-go/ocpp2.0.1/meter"

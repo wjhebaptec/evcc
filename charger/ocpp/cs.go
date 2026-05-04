@@ -38,7 +38,7 @@ type StationInfo struct {
 
 // Status represents the runtime OCPP status
 type Status struct {
-	ExternalUrl string          `json:"externalUrl,omitempty"`
+	ExternalUrl string        `json:"externalUrl,omitempty"`
 	Stations    []StationInfo `json:"stations"`
 }
 
