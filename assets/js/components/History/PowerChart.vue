@@ -83,7 +83,7 @@ export default defineComponent({
 				});
 
 				return {
-					label: s.group,
+					label: s.name || s.group,
 					data: points,
 					borderColor: color,
 					backgroundColor: fill,
@@ -172,7 +172,7 @@ export default defineComponent({
 		},
 		legends(): Legend[] {
 			return this.series.map((s, i) => ({
-				label: s.group,
+				label: s.name || s.group,
 				color: colors.palette[i % colors.palette.length],
 				value: "",
 			}));

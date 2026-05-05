@@ -32,9 +32,10 @@
 <script lang="ts">
 import { defineComponent } from "vue";
 import Header from "../components/Top/Header.vue";
-import PowerChart from "../components/History/PowerChart.vue";
+import PowerChart, { type SeriesData } from "../components/History/PowerChart.vue";
 import EnergyChart from "../components/History/EnergyChart.vue";
 import api from "../api";
+import store from "../store";
 
 export default defineComponent({
 	name: "History",
@@ -45,8 +46,8 @@ export default defineComponent({
 	},
 	data() {
 		return {
-			powerSeries: [] as any[],
-			energySeries: [] as any[],
+			powerSeries: [] as SeriesData[],
+			energySeries: [] as SeriesData[],
 			powerFrom: new Date(),
 			powerTo: new Date(),
 			energyFrom: new Date(),
@@ -83,7 +84,6 @@ export default defineComponent({
 						params: {
 							from: this.powerFrom.toISOString(),
 							to: this.powerTo.toISOString(),
-							grouped: true,
 						},
 					}),
 					api.get("history/energy", {
@@ -91,18 +91,25 @@ export default defineComponent({
 							from: this.energyFrom.toISOString(),
 							to: this.powerTo.toISOString(),
 							aggregate: "day",
-							grouped: true,
 						},
 					}),
 				]);
 
-				this.powerSeries = powerRes.data || [];
-				this.energySeries = energyRes.data || [];
+				this.powerSeries = (powerRes.data || []).map(this.applyDisplayName);
+				this.energySeries = (energyRes.data || []).map(this.applyDisplayName);
 			} catch (e) {
 				console.error("Failed to load energy history", e);
 			} finally {
 				this.loading = false;
 			}
+		},
+		applyDisplayName(s: SeriesData): SeriesData {
+			if (s.group === "loadpoint" && s.name) {
+				const idx = parseInt(s.name.replace(/^lp-/, ""), 10) - 1;
+				const title = (store.state.loadpoints || [])[idx]?.title;
+				if (title) return { ...s, name: title };
+			}
+			return { ...s, name: "" };
 		},
 	},
 });

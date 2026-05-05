@@ -66,6 +66,7 @@ export default defineComponent({
 
 			this.series.forEach((s, i) => {
 				const color = colors.palette[i % colors.palette.length];
+				const seriesLabel = s.name || s.group;
 
 				// index data by day
 				const byDay: Record<string, { import: number; export: number }> = {};
@@ -79,7 +80,7 @@ export default defineComponent({
 				const exportData = dayKeys.map((key) => -(byDay[key]?.export ?? 0));
 				const hasExport = exportData.some((v) => v !== 0);
 
-				const importLabel = hasExport ? `${s.group} (import)` : s.group;
+				const importLabel = hasExport ? `${seriesLabel} (import)` : seriesLabel;
 
 				datasets.push({
 					label: importLabel,
@@ -90,7 +91,7 @@ export default defineComponent({
 
 				if (hasExport) {
 					datasets.push({
-						label: `${s.group} (export)`,
+						label: `${seriesLabel} (export)`,
 						data: exportData,
 						backgroundColor: lighterColor(color),
 						stack: `s${i}`,
@@ -151,13 +152,14 @@ export default defineComponent({
 			const result: Legend[] = [];
 			this.series.forEach((s, i) => {
 				const color = colors.palette[i % colors.palette.length];
+				const seriesLabel = s.name || s.group;
 				const hasExport = s.data.some((slot) => slot.export > 0);
 
-				const importLabel = hasExport ? `${s.group} (import)` : s.group;
+				const importLabel = hasExport ? `${seriesLabel} (import)` : seriesLabel;
 				result.push({ label: importLabel, color, value: "" });
 				if (hasExport) {
 					result.push({
-						label: `${s.group} (export)`,
+						label: `${seriesLabel} (export)`,
 						color: lighterColor(color),
 						value: "",
 					});
