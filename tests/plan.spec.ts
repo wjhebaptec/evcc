@@ -364,7 +364,9 @@ test.describe("preview", async () => {
 
       await page.getByTestId("static-plan-time").fill("23:30");
       await expect(page.getByTestId("plan-preview-title")).toHaveText("Active plan");
-      await expect(page.getByTestId("static-plan-apply")).toBeVisible();
+      // reactivity from time change to apply-button reappearance can take
+      // longer than the default 5s timeout on slow CI runners
+      await expect(page.getByTestId("static-plan-apply")).toBeVisible({ timeout: 15000 });
 
       // deactivate
       await page.getByTestId("static-plan-active").click();
