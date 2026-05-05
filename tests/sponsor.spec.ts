@@ -71,8 +71,10 @@ test.describe("sponsor token", () => {
     await textarea.fill(EXPIRED_TOKEN);
     // Try to save to trigger validation
     await modal.getByRole("button", { name: "Save" }).click();
+    // backend token validation can take longer than the default 5s on slow CI
     await expect(modal).toContainText(
-      "token is expired - get a fresh one from https://sponsor.evcc.io"
+      "token is expired - get a fresh one from https://sponsor.evcc.io",
+      { timeout: 15000 }
     );
   });
 });
