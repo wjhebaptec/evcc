@@ -134,7 +134,7 @@
 										v-if="batteryForecastLowest"
 										class="d-flex align-items-center mb-2"
 									>
-										<ForecastMessage :message="batteryForecastLowest" />
+										<ForecastMessage :point="batteryForecastLowest" />
 									</div>
 									<div
 										v-else-if="batteryForecastHighest"
@@ -275,7 +275,7 @@
 										v-if="batteryForecastHighest"
 										class="d-flex align-items-center mb-2"
 									>
-										<ForecastMessage :message="batteryForecastHighest" />
+										<ForecastMessage :point="batteryForecastHighest" high />
 									</div>
 									<div
 										v-else-if="batteryForecastLowest"
@@ -584,11 +584,11 @@ export default defineComponent({
 		consumers() {
 			return [...this.aux, ...this.ext];
 		},
-		batteryForecastHighest(): string | undefined {
-			return this.fmtForecastPoint(this.battery?.forecast?.highest, true);
+		batteryForecastHighest(): BatteryForecastPoint | undefined {
+			return this.battery?.forecast?.highest;
 		},
-		batteryForecastLowest(): string | undefined {
-			return this.fmtForecastPoint(this.battery?.forecast?.lowest, false);
+		batteryForecastLowest(): BatteryForecastPoint | undefined {
+			return this.battery?.forecast?.lowest;
 		},
 		batteryForecastExists(): boolean {
 			return !!(this.batteryForecastHighest || this.batteryForecastLowest);
@@ -687,21 +687,6 @@ export default defineComponent({
 		},
 		genericConsumerTitle(index: number) {
 			return `${this.$t("config.devices.consumer")} #${index + 1}`;
-		},
-		fmtForecastPoint(
-			point: BatteryForecastPoint | undefined,
-			high: boolean
-		): string | undefined {
-			if (!point) return undefined;
-			const time = this.fmtAbsoluteDate(new Date(point.time));
-			if (point.limit) {
-				const key = high
-					? "main.energyflow.batteryForecastFull"
-					: "main.energyflow.batteryForecastEmpty";
-				return this.$t(key, { time });
-			}
-			const soc = this.fmtPercentage(point.soc);
-			return this.$t("main.energyflow.batteryForecastSoc", { soc, time });
 		},
 	},
 });
