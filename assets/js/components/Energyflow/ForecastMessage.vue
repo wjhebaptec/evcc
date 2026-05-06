@@ -1,6 +1,6 @@
 <template>
 	<router-link to="/optimize" class="root" @click.stop>
-		{{ label }}<span class="message">{{ message }}</span>
+		{{ label }}: <span class="message">{{ message }}</span>
 	</router-link>
 </template>
 
