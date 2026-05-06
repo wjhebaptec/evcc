@@ -342,18 +342,26 @@ func getBackup(authObject auth.Auth) http.HandlerFunc {
 
 		filename := "evcc-backup-" + time.Now().Format("2006-01-02--15-04") + ".db"
 
-		tmpFilename := os.TempDir() + string(os.PathSeparator) + filename
-		if err := db.Backup(r.Context(), tmpFilename); err != nil {
+		tmpFile, err := os.CreateTemp("", "evcc-backup-*.db")
+		if err != nil {
+			http.Error(w, "Creating backup failed", http.StatusInternalServerError)
+			return
+		}
+		tmpName := tmpFile.Name()
+		tmpFile.Close()
+		defer os.Remove(tmpName)
+
+		if err := db.Backup(r.Context(), tmpName); err != nil {
 			http.Error(w, "Backup failed", http.StatusInternalServerError)
 			return
 		}
 
-		f, err := os.Open(tmpFilename)
+		f, err := os.Open(tmpName)
 		if err != nil {
 			http.Error(w, "Opening backup failed", http.StatusInternalServerError)
 			return
 		}
-		defer os.Remove(tmpFilename)
+		defer f.Close()
 
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
@@ -372,30 +380,72 @@ func createLocalDatabaseBackup(ctx context.Context) error {
 
 func restoreDatabase(authObject auth.Auth, shutdown func()) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Parse multipart form and spill to disk
-		if err := r.ParseMultipartForm(0); err != nil {
+		// cap upload size to bound disk usage
+		r.Body = http.MaxBytesReader(w, r.Body, 256<<20)
+
+		mr, err := r.MultipartReader()
+		if err != nil {
 			http.Error(w, "Failed to parse form: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		if !adminPasswordValid(authObject, r.FormValue("password")) {
+		var (
+			password string
+			tmpName  string
+		)
+
+		for {
+			part, err := mr.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				http.Error(w, "Upload failed", http.StatusBadRequest)
+				return
+			}
+
+			switch part.FormName() {
+			case "password":
+				b, err := io.ReadAll(io.LimitReader(part, 1<<10))
+				part.Close()
+				if err != nil {
+					http.Error(w, "Upload failed", http.StatusBadRequest)
+					return
+				}
+				password = string(b)
+
+			case "file":
+				tmpFile, err := os.CreateTemp("", "evcc-restore-*.db")
+				if err != nil {
+					part.Close()
+					http.Error(w, "Failed to create temp file", http.StatusInternalServerError)
+					return
+				}
+				tmpName = tmpFile.Name()
+				defer os.Remove(tmpName)
+
+				_, copyErr := io.Copy(tmpFile, part)
+				closeErr := tmpFile.Close()
+				part.Close()
+				if copyErr != nil || closeErr != nil {
+					http.Error(w, "Upload failed", http.StatusBadRequest)
+					return
+				}
+
+			default:
+				part.Close()
+			}
+		}
+
+		if !adminPasswordValid(authObject, password) {
 			http.Error(w, "Invalid password", http.StatusUnauthorized)
 			return
 		}
 
-		file, _, err := r.FormFile("file")
-		if err != nil {
-			http.Error(w, "Upload failed", http.StatusBadRequest)
+		if tmpName == "" {
+			http.Error(w, "Missing file", http.StatusBadRequest)
 			return
 		}
-
-		osFile, ok := file.(*os.File)
-		if err := file.Close(); !ok || err != nil {
-			http.Error(w, "Upload failed", http.StatusInternalServerError)
-			return
-		}
-
-		defer os.Remove(osFile.Name())
 
 		settings.Persist()
 
@@ -405,7 +455,7 @@ func restoreDatabase(authObject auth.Auth, shutdown func()) http.HandlerFunc {
 			return
 		}
 
-		if err := db.Restore(r.Context(), osFile.Name()); err != nil {
+		if err := db.Restore(r.Context(), tmpName); err != nil {
 			http.Error(w, "Restore failed", http.StatusInternalServerError)
 			return
 		}
