@@ -11,7 +11,7 @@ package eebus
 
 // MGCP — Monitoring of Grid Connection Point (UC TS v1.0.0)
 const (
-	MGCPScenarioPVFactor        uint = 1 // S1 power factor (cos phi)
+	MGCPScenarioPowerFactor     uint = 1 // S1 power factor (cos phi)
 	MGCPScenarioPower           uint = 2 // S2 active power per phase + total
 	MGCPScenarioEnergyFeedIn    uint = 3 // S3 total feed-in energy
 	MGCPScenarioEnergyConsumed  uint = 4 // S4 total consumed energy
