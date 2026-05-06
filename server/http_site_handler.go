@@ -343,7 +343,7 @@ func getBackup(authObject auth.Auth) http.HandlerFunc {
 		filename := "evcc-backup-" + time.Now().Format("2006-01-02--15-04") + ".db"
 
 		tmpFilename := os.TempDir() + string(os.PathSeparator) + filename
-		if err := db.Backup(context.TODO(), tmpFilename); err != nil {
+		if err := db.Backup(r.Context(), tmpFilename); err != nil {
 			http.Error(w, "Backup failed", http.StatusInternalServerError)
 			return
 		}
@@ -366,8 +366,8 @@ func getBackup(authObject auth.Auth) http.HandlerFunc {
 }
 
 // createLocalDatabaseBackup creates a local backup in case of catastrophic error in reset or restore
-func createLocalDatabaseBackup() error {
-	return db.Backup(context.TODO(), db.FilePath()+".bak")
+func createLocalDatabaseBackup(ctx context.Context) error {
+	return db.Backup(ctx, db.FilePath()+".bak")
 }
 
 func restoreDatabase(authObject auth.Auth, shutdown func()) http.HandlerFunc {
@@ -400,12 +400,12 @@ func restoreDatabase(authObject auth.Auth, shutdown func()) http.HandlerFunc {
 		settings.Persist()
 
 		// create local backup before overwriting
-		if err := createLocalDatabaseBackup(); err != nil {
+		if err := createLocalDatabaseBackup(r.Context()); err != nil {
 			http.Error(w, "Backup failed", http.StatusInternalServerError)
 			return
 		}
 
-		if err := db.Restore(context.TODO(), osFile.Name()); err != nil {
+		if err := db.Restore(r.Context(), osFile.Name()); err != nil {
 			http.Error(w, "Restore failed", http.StatusInternalServerError)
 			return
 		}
@@ -442,7 +442,7 @@ func resetDatabase(authObject auth.Auth, shutdown func()) http.HandlerFunc {
 
 		settings.Persist()
 
-		if err := createLocalDatabaseBackup(); err != nil {
+		if err := createLocalDatabaseBackup(r.Context()); err != nil {
 			jsonError(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -465,8 +465,6 @@ func resetDatabase(authObject auth.Auth, shutdown func()) http.HandlerFunc {
 				}
 			}
 		}
-
-		// TODO why do we need this? Looks hacky?
 
 		// close db connection to avoid on-shutdown writes
 		if err := db.Close(); err != nil {
