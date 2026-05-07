@@ -392,6 +392,15 @@
 					>
 						<template #icon><EebusIcon /></template>
 					</DeviceCard>
+					<DeviceCard
+						v-if="experimental"
+						:title="`${$t('config.mcp.title')} 🧪`"
+						editable
+						data-testid="mcp"
+						@edit="openModal('mcp')"
+					>
+						<template #icon><McpIcon /></template>
+					</DeviceCard>
 				</div>
 
 				<hr class="my-5" />
@@ -456,6 +465,7 @@
 				/>
 				<TelemetryModal :is-sponsor="isSponsor" :telemetry="telemetry" />
 				<OptimizerModal :is-sponsor="isSponsor" />
+				<McpModal />
 				<ExperimentalModal :experimental="experimental" />
 				<RemoteModal :remote="remote" :is-sponsor="isSponsor" />
 				<TitleModal @changed="loadDirty" />
@@ -522,6 +532,8 @@ import NetworkModal from "../components/Config/NetworkModal.vue";
 import NotificationIcon from "../components/MaterialIcon/Notification.vue";
 import OptimizerIcon from "../components/MaterialIcon/Optimizer.vue";
 import OptimizerModal from "../components/Config/OptimizerModal.vue";
+import McpIcon from "../components/MaterialIcon/Mcp.vue";
+import McpModal from "../components/Config/McpModal.vue";
 import restart, { performRestart } from "../restart";
 import SponsorModal from "../components/Config/SponsorModal.vue";
 import store from "../store";
@@ -607,6 +619,8 @@ export default defineComponent({
 		NotificationIcon,
 		OptimizerIcon,
 		OptimizerModal,
+		McpIcon,
+		McpModal,
 		SponsorModal,
 		TariffsLegacyModal,
 		TariffCard,
