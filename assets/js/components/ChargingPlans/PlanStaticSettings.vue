@@ -242,10 +242,7 @@ export default defineComponent({
 		},
 	},
 	watch: {
-		time(newTime, oldTime) {
-			const a = newTime ? new Date(newTime).getTime() : 0;
-			const b = oldTime ? new Date(oldTime).getTime() : 0;
-			if (a === b) return;
+		time() {
 			this.initInputFields();
 		},
 		soc() {
