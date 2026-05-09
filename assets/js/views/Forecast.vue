@@ -243,7 +243,7 @@ export default defineComponent({
 			return true;
 		},
 		showSolarAdjust() {
-			return !!this.forecast.solar && this.experimental;
+			return !!this.forecast.solar && this.experimental && false;
 		},
 		solar() {
 			return this.showSolarAdjust && this.solarAdjusted
