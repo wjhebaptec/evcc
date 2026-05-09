@@ -1,11 +1,6 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 import { start, stop, restart, baseUrl } from "./evcc";
-import {
-  expectModalVisible,
-  expectModalHidden,
-  addDemoCharger,
-  newLoadpoint,
-} from "./utils";
+import { expectModalVisible, expectModalHidden, addDemoCharger, newLoadpoint } from "./utils";
 
 test.use({ baseURL: baseUrl() });
 test.describe.configure({ mode: "parallel" });
