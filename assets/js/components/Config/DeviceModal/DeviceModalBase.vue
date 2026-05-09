@@ -157,6 +157,7 @@
 					v-if="showActions"
 					:is-deletable="isDeletable"
 					:is-disabled="isDisabled"
+					:can-disable="canDisable"
 					:test-state="test"
 					:is-saving="saving"
 					:is-succeeded="succeeded"
@@ -177,7 +178,7 @@
 import { defineComponent, type PropType } from "vue";
 import GenericModal from "../../Helper/GenericModal.vue";
 import DeviceInfoButton from "./DeviceInfoButton.vue";
-import { closeModal } from "@/configModal";
+import { closeModal, isNestedIn } from "@/configModal";
 import ErrorMessage from "../../Helper/ErrorMessage.vue";
 import PropertyEntry from "../PropertyEntry.vue";
 import PropertyCollapsible from "../PropertyCollapsible.vue";
@@ -406,6 +407,9 @@ export default defineComponent({
 		},
 		isDisabled() {
 			return Boolean(this.values.deviceDisable);
+		},
+		canDisable(): boolean {
+			return !isNestedIn("loadpoint");
 		},
 		showActions() {
 			// explicitly hide template fields (ocpp step 1)

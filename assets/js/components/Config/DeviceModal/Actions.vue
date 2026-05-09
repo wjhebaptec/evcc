@@ -29,7 +29,7 @@
 					{{ $t("config.general.cancel") }}
 				</button>
 				<button
-					v-if="isDeletable"
+					v-if="isDeletable && canDisable"
 					type="button"
 					class="btn btn-link text-muted"
 					tabindex="0"
@@ -73,6 +73,7 @@ export default defineComponent({
 	props: {
 		isDeletable: Boolean as PropType<boolean>,
 		isDisabled: Boolean as PropType<boolean>,
+		canDisable: { type: Boolean as PropType<boolean>, default: true },
 		testState: {
 			type: Object as PropType<TestState>,
 			default: () => {},
