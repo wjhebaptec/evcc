@@ -150,6 +150,9 @@ func (site *Site) solarDetails(solar api.Rates) solarDetails {
 		Complete: !last.Before(eot.AddDate(0, 0, 1)),
 	}
 
+	// reset before accumulating so today's bias drives the optimizer
+	site.resetSolarAccumulatorsIfNewDay()
+
 	// accumulate forecasted energy since last update
 	fcstUpdated := site.fcstEnergy.Updated()
 	energy := solarEnergy(solar, fcstUpdated, time.Now()) / 1e3
@@ -160,22 +163,61 @@ func (site *Site) solarDetails(solar api.Rates) solarDetails {
 	site.fcstEnergy.AddImportEnergy(energy)
 	settings.SetFloat(keys.SolarAccForecast, site.fcstEnergy.Imported())
 
-	produced := lo.SumBy(slices.Collect(maps.Values(site.pvEnergy)), func(v *metrics.Accumulator) float64 {
-		return v.Imported()
-	})
-	site.log.DEBUG.Printf("solar forecast: produced %.3f", produced)
-
-	if fcst := site.fcstEnergy.Imported(); fcst > 0 {
-		scale := produced / fcst
-		site.log.DEBUG.Printf("solar forecast: accumulated %.3fkWh, produced %.3fkWh, scale %.3f", fcst, produced, scale)
-
-		const minEnergy = 0.5 // kWh
-		if produced+fcst > minEnergy {
-			res.Scale = new(scale)
-		}
+	if scale := site.solarScale(); scale > 0 {
+		res.Scale = &scale
 	}
 
 	return res
+}
+
+// resetSolarAccumulatorsIfNewDay zeros forecast and production accumulators on
+// day rollover so solarScale() reflects today's bias rather than a lifetime
+// average. Both sides reset together to keep the ratio's window aligned (#29165).
+func (site *Site) resetSolarAccumulatorsIfNewDay() {
+	today := now.BeginningOfDay()
+	last, _ := settings.Time(keys.SolarAccDay)
+	if !last.Before(today) {
+		return
+	}
+
+	site.fcstEnergy.Import = 0
+	for _, pe := range site.pvProduction {
+		pe.Import = 0
+	}
+
+	settings.SetTime(keys.SolarAccDay, today)
+	settings.SetFloat(keys.SolarAccForecast, 0)
+	if err := settings.SetJson(keys.SolarAccYield, site.pvProduction); err != nil {
+		site.log.ERROR.Println("solar daily reset:", err)
+	}
+
+	if !last.IsZero() {
+		site.log.DEBUG.Printf("solar forecast: daily reset (was %s)", last.Format(time.DateOnly))
+	}
+}
+
+// solarScale returns the ratio of accumulated produced solar energy to
+// accumulated forecasted solar energy. Used to adjust forecasts down when
+// PV is consistently under-/over-producing relative to the forecast.
+// Returns 0 until enough data is collected to make the ratio meaningful.
+func (site *Site) solarScale() float64 {
+	fcst := site.fcstEnergy.Imported()
+	if fcst <= 0 {
+		return 0
+	}
+
+	produced := lo.SumBy(slices.Collect(maps.Values(site.pvProduction)), func(v *metrics.Accumulator) float64 {
+		return v.Imported()
+	})
+
+	const minEnergy = 0.5 // kWh
+	if produced+fcst <= minEnergy {
+		return 0
+	}
+
+	scale := produced / fcst
+	site.log.DEBUG.Printf("solar forecast: accumulated %.3fkWh, produced %.3fkWh, scale %.3f", fcst, produced, scale)
+	return scale
 }
 
 func (site *Site) isDynamicTariff(usage api.TariffUsage) bool {
