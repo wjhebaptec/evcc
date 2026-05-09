@@ -13,6 +13,7 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/evcc-io/evcc/api"
+	"github.com/jinzhu/now"
 	"github.com/evcc-io/evcc/cmd/shutdown"
 	"github.com/evcc-io/evcc/core/circuit"
 	"github.com/evcc-io/evcc/core/coordinator"
@@ -85,13 +86,11 @@ type Site struct {
 	prioritizer *prioritizer.Prioritizer // Power budgets
 	stats       *Stats                   // Stats
 
-	// forecast scaling
-	fcstEnergy   *metrics.Accumulator            // accumulated forecast
-	pvProduction map[string]*metrics.Accumulator // accumulated solar production
-
 	// metrics
-	pvEnergy               map[string]*metrics.Collector
-	homeEnergy, gridEnergy *metrics.Collector
+	pvEnergy                           map[string]*metrics.Collector
+	homeEnergy, gridEnergy, fcstEnergy *metrics.Collector
+	// lastFcstUpdate is read/written only from the site update loop
+	lastFcstUpdate time.Time
 
 	// cached state
 	gridPower                float64            // Grid power
@@ -209,15 +208,27 @@ func (site *Site) Boot(log *util.Logger, loadpoints []*Loadpoint, tariffs *tarif
 		}
 		site.pvMeters = append(site.pvMeters, dev)
 
-		// production accumulator (for forecast scaling)
-		site.pvProduction[ref] = metrics.NewAccumulator()
-
-		// energy collector (for history persistence)
+		// energy collector (for history persistence and forecast scaling)
 		me, err := metrics.NewCollector(metrics.PV, ref)
 		if err != nil {
 			return err
 		}
 		site.pvEnergy[ref] = me
+	}
+
+	// solar forecast collector (mirrors PV history shape, used for scale lookup)
+	fc, err := metrics.NewCollector(metrics.Forecast, metrics.Forecast)
+	if err != nil {
+		return err
+	}
+	site.fcstEnergy = fc
+
+	// resume forecast accumulation from the last persisted slot so a restart
+	// doesn't drop today's already-seen forecast (which would bias solarScale)
+	if last, err := fc.LatestSlot(); err != nil {
+		return err
+	} else if !last.Before(now.BeginningOfDay()) {
+		site.lastFcstUpdate = last
 	}
 
 	// multiple batteries
@@ -262,11 +273,9 @@ func (site *Site) Boot(log *util.Logger, loadpoints []*Loadpoint, tariffs *tarif
 // NewSite creates a Site with sane defaults
 func NewSite() *Site {
 	site := &Site{
-		log:          util.NewLogger("site"),
-		Voltage:      230, // V
-		pvProduction: make(map[string]*metrics.Accumulator),
-		pvEnergy:     make(map[string]*metrics.Collector),
-		fcstEnergy:   metrics.NewAccumulator(),
+		log:      util.NewLogger("site"),
+		Voltage:  230, // V
+		pvEnergy: make(map[string]*metrics.Collector),
 	}
 
 	return site
@@ -333,36 +342,10 @@ func (site *Site) restoreSettings() error {
 		}
 	}
 
-	// restore accumulated energy
-	pvProduction := make(map[string]metrics.Accumulator)
-	fcstEnergy, err := settings.Float(keys.SolarAccForecast)
-
-	if err == nil && settings.Json(keys.SolarAccYield, &pvProduction) == nil {
-		var nok bool
-		for _, name := range site.Meters.PVMetersRef {
-			if fcst, ok := pvProduction[name]; ok {
-				site.pvProduction[name].Import = fcst.Import
-			} else {
-				nok = true
-				site.log.WARN.Printf("accumulated solar yield: cannot restore %s", name)
-			}
-		}
-
-		if !nok {
-			site.fcstEnergy.Import = fcstEnergy
-			site.log.DEBUG.Printf("accumulated solar yield: restored %.3fkWh forecasted, %+v produced", fcstEnergy, pvProduction)
-		} else {
-			// reset metrics
-			site.log.WARN.Printf("accumulated solar yield: metrics reset")
-
-			settings.Delete(keys.SolarAccForecast)
-			settings.Delete(keys.SolarAccYield)
-
-			for _, pe := range site.pvProduction {
-				pe.Import = 0
-			}
-		}
-	}
+	// drop legacy accumulator-based forecast settings (now stored via metrics collector)
+	settings.Delete("solarAccForecast")
+	settings.Delete("solarAccYield")
+	settings.Delete("solarAccDay")
 
 	return nil
 }
@@ -597,40 +580,21 @@ func (site *Site) updatePvMeters() {
 	site.publish(keys.PvEnergy, totalEnergy)
 	site.publish(keys.Pv, mm)
 
-	// reset before accumulating so today's bias drives the optimizer
-	site.resetSolarAccumulatorsIfNewDay()
-
-	// update solar yield
+	// persist per-meter PV energy slots (used for history and forecast scaling)
 	for i, dev := range site.pvMeters {
 		// use stored devices, not ui-updated instances!
 		name := dev.Config().Name
+		c, ok := site.pvEnergy[name]
+		if !ok {
+			continue
+		}
 
-		// forecast-scaling accumulator (today's totals, persisted as JSON)
-		prev := site.pvProduction[name].Imported()
 		var importEnergy *float64
 		if mm[i].Energy > 0 {
 			importEnergy = &mm[i].Energy
-			site.log.DEBUG.Printf("!! solar production: accumulate set %s %.3fkWh meter total (was: %s)", name, mm[i].Energy, site.pvProduction[name])
-			site.pvProduction[name].SetImportMeterTotal(mm[i].Energy)
-		} else {
-			site.log.DEBUG.Printf("!! solar production: accumulate add %s %.3fW power (was: %s)", name, mm[i].Power, site.pvProduction[name])
-			site.pvProduction[name].AddPower(mm[i].Power)
 		}
-		site.log.DEBUG.Printf("!! solar production: accumulate moved %s from %.3f to %.3f", name, prev, site.pvProduction[name].Imported())
-
-		// history collector (15-min slots, persisted to DB)
-		if c, ok := site.pvEnergy[name]; ok {
-			if err := c.AddEnergy(importEnergy, nil, mm[i].Power); err != nil {
-				site.log.ERROR.Printf("persist pv %d energy: %v", i+1, err)
-			}
-		}
-	}
-
-	// store
-	if err := settings.SetJson(keys.SolarAccYield, site.pvProduction); err != nil {
-		site.log.ERROR.Println("accumulated solar production:", err)
-		for k, v := range site.pvProduction {
-			site.log.ERROR.Printf("!! %s: %+v", k, v)
+		if err := c.AddEnergy(importEnergy, nil, mm[i].Power); err != nil {
+			site.log.ERROR.Printf("persist pv %d energy: %v", i+1, err)
 		}
 	}
 }

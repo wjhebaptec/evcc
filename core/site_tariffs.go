@@ -1,19 +1,15 @@
 package core
 
 import (
-	"maps"
 	"math"
-	"slices"
 	"time"
 
 	"github.com/evcc-io/evcc/api"
 	"github.com/evcc-io/evcc/core/keys"
 	"github.com/evcc-io/evcc/core/metrics"
-	"github.com/evcc-io/evcc/server/db/settings"
 	"github.com/evcc-io/evcc/tariff"
 	"github.com/evcc-io/evcc/util"
 	"github.com/jinzhu/now"
-	"github.com/samber/lo"
 )
 
 type solarDetails struct {
@@ -150,74 +146,62 @@ func (site *Site) solarDetails(solar api.Rates) solarDetails {
 		Complete: !last.Before(eot.AddDate(0, 0, 1)),
 	}
 
-	// reset before accumulating so today's bias drives the optimizer
-	site.resetSolarAccumulatorsIfNewDay()
+	// accumulate forecasted energy since last update via the forecast collector
+	since := site.lastFcstUpdate
+	if since.IsZero() {
+		since = time.Now()
+	}
+	if energy := solarEnergy(solar, since, time.Now()) / 1e3; energy > 0 {
+		if err := site.fcstEnergy.AddImportEnergy(energy); err != nil {
+			site.log.ERROR.Printf("solar forecast collector: %v", err)
+		}
+	}
+	site.lastFcstUpdate = time.Now()
 
-	// accumulate forecasted energy since last update
-	fcstUpdated := site.fcstEnergy.Updated()
-	energy := solarEnergy(solar, fcstUpdated, time.Now()) / 1e3
-	site.log.DEBUG.Printf("solar forecast: accumulated %.3fWh from %v to %v",
-		energy, fcstUpdated.Truncate(time.Second), time.Now().Truncate(time.Second),
-	)
-
-	site.fcstEnergy.AddImportEnergy(energy)
-	settings.SetFloat(keys.SolarAccForecast, site.fcstEnergy.Imported())
-
-	if scale := site.solarScale(); scale > 0 {
+	if scale, ok := site.solarScale(); ok {
 		res.Scale = &scale
 	}
 
 	return res
 }
 
-// resetSolarAccumulatorsIfNewDay zeros forecast and production accumulators on
-// day rollover so solarScale() reflects today's bias rather than a lifetime
-// average. Both sides reset together to keep the ratio's window aligned (#29165).
-func (site *Site) resetSolarAccumulatorsIfNewDay() {
-	today := now.BeginningOfDay()
-	last, _ := settings.Time(keys.SolarAccDay)
-	if !last.Before(today) {
-		return
+// solarScale returns the ratio of produced solar energy to forecasted solar
+// energy for the current day, queried from the metrics database. Used to
+// adjust forecasts when PV is consistently under-/over-producing relative
+// to the forecast. The second return value indicates whether enough data
+// exists to make the ratio meaningful.
+func (site *Site) solarScale() (float64, bool) {
+	series, err := metrics.QueryImportEnergy(now.BeginningOfDay(), time.Now(), "day", true)
+	if err != nil {
+		site.log.ERROR.Printf("solar forecast scale: %v", err)
+		return 0, false
 	}
 
-	site.fcstEnergy.Import = 0
-	for _, pe := range site.pvProduction {
-		pe.Import = 0
+	var pv, fcst float64
+	for _, s := range series {
+		if len(s.Data) == 0 {
+			continue
+		}
+		switch s.Group {
+		case metrics.PV:
+			pv = s.Data[0].Import
+		case metrics.Forecast:
+			fcst = s.Data[0].Import
+		}
 	}
 
-	settings.SetTime(keys.SolarAccDay, today)
-	settings.SetFloat(keys.SolarAccForecast, 0)
-	if err := settings.SetJson(keys.SolarAccYield, site.pvProduction); err != nil {
-		site.log.ERROR.Println("solar daily reset:", err)
-	}
-
-	if !last.IsZero() {
-		site.log.DEBUG.Printf("solar forecast: daily reset (was %s)", last.Format(time.DateOnly))
-	}
-}
-
-// solarScale returns the ratio of accumulated produced solar energy to
-// accumulated forecasted solar energy. Used to adjust forecasts down when
-// PV is consistently under-/over-producing relative to the forecast.
-// Returns 0 until enough data is collected to make the ratio meaningful.
-func (site *Site) solarScale() float64 {
-	fcst := site.fcstEnergy.Imported()
 	if fcst <= 0 {
-		return 0
+		return 0, false
 	}
-
-	produced := lo.SumBy(slices.Collect(maps.Values(site.pvProduction)), func(v *metrics.Accumulator) float64 {
-		return v.Imported()
-	})
 
 	const minEnergy = 0.5 // kWh
-	if produced+fcst <= minEnergy {
-		return 0
+	if pv+fcst <= minEnergy {
+		return 0, false
 	}
 
-	scale := produced / fcst
-	site.log.DEBUG.Printf("solar forecast: accumulated %.3fkWh, produced %.3fkWh, scale %.3f", fcst, produced, scale)
-	return scale
+	scale := pv / fcst
+	site.log.DEBUG.Printf("solar forecast: produced %.3fkWh, forecasted %.3fkWh, scale %.3f", pv, fcst, scale)
+	return scale, true
 }
 
 func (site *Site) isDynamicTariff(usage api.TariffUsage) bool {

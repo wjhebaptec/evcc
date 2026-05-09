@@ -158,7 +158,7 @@ func (site *Site) optimizerUpdate(battery []types.Measurement) error {
 		}
 
 		pruned := scaleAndPrune(solarEnergy, 1, minLen)
-		if scale := site.solarScale(); scale > 0 {
+		if scale, ok := site.solarScale(); ok {
 			s := float32(scale)
 			for i := range pruned {
 				pruned[i] *= s
