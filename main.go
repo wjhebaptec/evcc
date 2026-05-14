@@ -13,6 +13,9 @@ import (
 //
 // Personal fork: using this to manage charging for my VW ID.4 with a
 // SolarEdge inverter. Main config lives in ~/.evcc/evcc.yaml.
+//
+// Note: exit code 2 is used for configuration/usage errors (set by cobra),
+// exit code 1 is used for runtime errors caught here.
 func main() {
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
