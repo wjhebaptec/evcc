@@ -16,6 +16,8 @@ import (
 //
 // Note: exit code 2 is used for configuration/usage errors (set by cobra),
 // exit code 1 is used for runtime errors caught here.
+//
+// TODO: look into contributing SolarEdge SE7600H inverter fixes upstream.
 func main() {
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
