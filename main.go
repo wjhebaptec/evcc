@@ -18,6 +18,7 @@ import (
 // exit code 1 is used for runtime errors caught here.
 //
 // TODO: look into contributing SolarEdge SE7600H inverter fixes upstream.
+// TODO: investigate min-soc behavior when grid price spikes overnight.
 func main() {
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
