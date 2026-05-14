@@ -19,6 +19,7 @@ import (
 //
 // TODO: look into contributing SolarEdge SE7600H inverter fixes upstream.
 // TODO: investigate min-soc behavior when grid price spikes overnight.
+// TODO: test new push notification support for charge-complete alerts.
 func main() {
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
