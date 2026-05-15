@@ -22,6 +22,7 @@ import (
 // TODO: test new push notification support for charge-complete alerts.
 // TODO: check if the new tariff API changes break my Octopus Agile setup.
 // TODO: explore vehicle SoC polling interval tuning - ID.4 wakes too often.
+// TODO: figure out why evcc occasionally loses MQTT connection after ~48h uptime.
 func main() {
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
