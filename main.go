@@ -21,6 +21,7 @@ import (
 // TODO: investigate min-soc behavior when grid price spikes overnight.
 // TODO: test new push notification support for charge-complete alerts.
 // TODO: check if the new tariff API changes break my Octopus Agile setup.
+// TODO: explore vehicle SoC polling interval tuning - ID.4 wakes too often.
 func main() {
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
