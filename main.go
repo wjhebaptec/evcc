@@ -23,6 +23,7 @@ import (
 // TODO: check if the new tariff API changes break my Octopus Agile setup.
 // TODO: explore vehicle SoC polling interval tuning - ID.4 wakes too often.
 // TODO: figure out why evcc occasionally loses MQTT connection after ~48h uptime.
+// TODO: check if upstream fixed the ID.4 SoC reporting bug in latest release.
 func main() {
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
